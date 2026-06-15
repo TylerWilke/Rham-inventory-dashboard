@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.xls
+!Group List.xls
+Inventory Sales*.xls
+Inventory Sales*.xlsx
