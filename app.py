@@ -243,6 +243,8 @@ with st.sidebar:
                 df = df[df["Group_Category"].isin(sel_categories)]
             if sel_years:
                 df = df[df["Year"].isin(sel_years)]
+            # Save filtered df before negative exclusion for the Negative Amounts tab
+            df_with_negatives = df.copy()
             if exclude_negative:
                 df = df[df["Gross Profit"] >= 0]
 
@@ -253,6 +255,7 @@ with st.sidebar:
     else:
         df = None
         full_df = None
+        df_with_negatives = None
         gp_threshold = 50
         exclude_negative = False
 
@@ -280,7 +283,7 @@ if df is None or len(df) == 0:
     st.warning("No data matches the current filters.")
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 Overview",
     "⚠️ Low GP Analysis",
     "💸 Profit Lost",
@@ -288,6 +291,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🔀 Item GP by Customer",
     "📅 By Year",
     "📋 Raw Data",
+    "➖ Negative Amounts",
 ])
 
 # ─── Tab 1: Overview ──────────────────────────────────────────────────────────
@@ -407,6 +411,77 @@ with tab3:
     c2.metric("Actual Gross Profit Earned",          fmt_zar(total_actual))
     c3.metric(f"Target Gross Profit @ {gp_threshold}%", fmt_zar(total_target))
     c4.metric("Total Profit Lost",                   fmt_zar(total_lost))
+
+    # ── Reconciliation (only shown when negatives are excluded) ──────────────
+    if exclude_negative:
+        st.markdown("---")
+        st.markdown("#### Reconciliation — Impact of Removing Negative Gross Profit Items")
+        st.caption("Shows what changed when negative GP items were excluded from the analysis.")
+
+        # Below-threshold items BEFORE negative exclusion
+        low_pl_before = df_with_negatives[df_with_negatives["Gross Profit %"] < gp_threshold].copy()
+        low_pl_before["Target GP"]   = (gp_threshold / 100 * low_pl_before["Amount"]).round(2)
+        low_pl_before["Profit Lost"] = (low_pl_before["Target GP"] - low_pl_before["Gross Profit"]).round(2)
+
+        # The negative GP items that were removed
+        neg_removed = low_pl_before[low_pl_before["Gross Profit"] < 0]
+
+        pl_before   = low_pl_before["Profit Lost"].sum()
+        pl_removed  = neg_removed["Profit Lost"].sum()
+        pl_after    = total_lost  # already calculated from df (negatives excluded)
+
+        recon = pd.DataFrame({
+            "":       ["Sales (R)", "Cost (R)", "Gross Profit (R)", "Profit Lost (R)"],
+            "Before (incl. negatives)": [
+                low_pl_before["Amount"].sum(),
+                low_pl_before["Cost"].sum(),
+                low_pl_before["Gross Profit"].sum(),
+                pl_before,
+            ],
+            "Negatives Removed": [
+                neg_removed["Amount"].sum(),
+                neg_removed["Cost"].sum(),
+                neg_removed["Gross Profit"].sum(),
+                pl_removed,
+            ],
+            "After (excl. negatives)": [
+                low_pl["Amount"].sum(),
+                low_pl["Cost"].sum(),
+                low_pl["Gross Profit"].sum(),
+                pl_after,
+            ],
+        })
+
+        st.dataframe(
+            recon.style.format({
+                "Before (incl. negatives)": _space_fmt,
+                "Negatives Removed":        _space_fmt,
+                "After (excl. negatives)":  _space_fmt,
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        import streamlit.components.v1 as components
+        components.html("""
+        <button onclick="
+            const tabs = window.parent.document.querySelectorAll('button[role=tab]');
+            for (let t of tabs) {
+                if (t.innerText.includes('Negative')) { t.click(); window.parent.scrollTo(0,0); break; }
+            }
+        " style="
+            background-color: #1c3d6b;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 4px;
+            letter-spacing: 0.5px;
+        ">➖ View Negative Amounts</button>
+        """, height=60)
 
     st.markdown("---")
 
@@ -735,3 +810,35 @@ with tab7:
             file_name="inventory_gp_analysis_filtered.csv",
             mime="text/csv",
         )
+
+# ─── Tab 8: Negative Amounts ──────────────────────────────────────────────────
+with tab8:
+    st.subheader("Negative Amounts")
+
+    neg_df = df_with_negatives[df_with_negatives["Gross Profit"] < 0].copy()
+
+    if neg_df.empty:
+        st.info("No negative amounts found in the uploaded data.")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Negative Transactions", f"{len(neg_df):,}".replace(",", " "))
+        c2.metric("Total Negative Amount", fmt_zar(neg_df["Amount"].sum()))
+        c3.metric("Customers Affected", f"{neg_df['Customer'].nunique():,}")
+
+        st.markdown("---")
+
+        neg_display = neg_df[["Customer", "Item Code", "Item Description", "Date",
+                               "Group", "Quantity", "Amount", "Cost",
+                               "Gross Profit", "Gross Profit %"]].sort_values("Amount")
+
+        st.dataframe(neg_display, use_container_width=True, height=500,
+                     column_config={"Item Description": st.column_config.TextColumn(width="small")})
+
+        nd1, nd2, _ = st.columns([1, 1, 4])
+        with nd1:
+            st.download_button("⬇️ Download Excel", data=to_excel_bytes(neg_display),
+                               file_name="negative_amounts.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with nd2:
+            st.download_button("⬇️ Download CSV", data=neg_display.to_csv(index=False).encode(),
+                               file_name="negative_amounts.csv", mime="text/csv")
