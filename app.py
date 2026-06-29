@@ -72,20 +72,6 @@ def fmt_pct(value):
 def fmt_num(value):
     return f"{value:,.2f}".replace(",", " ")
 
-# ── Column positions in the raw XLS (0-indexed) ───────────────────────────────
-COL_MAP = {
-    "Item Code": 0,
-    "Item Description": 2,
-    "Date": 8,
-    "Group": 10,
-    "Quantity": 13,
-    "Amount": 17,
-    "Cost": 19,
-    "Gross Profit": 21,
-    "Gross Profit %": 23,
-    "Markup %": 25,
-}
-
 GROUP_LIST_PATH = Path(__file__).parent / "Group List.xls"
 
 
@@ -109,13 +95,94 @@ def load_group_list():
 def parse_sales_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
 
+    # Scan up to first 60 rows for a row that contains "Item Code" in any column
     header_row = None
-    for i, val in enumerate(raw.iloc[:, 0]):
-        if str(val).strip() == "Item Code":
-            header_row = i
+    item_code_col = None
+    for i in range(min(60, len(raw))):
+        for j, val in enumerate(raw.iloc[i]):
+            if str(val).strip() == "Item Code":
+                header_row = i
+                item_code_col = j
+                break
+        if header_row is not None:
             break
     if header_row is None:
         raise ValueError("Could not find 'Item Code' header row in the uploaded file.")
+
+    # Build dynamic column map by scanning the header row for known keywords
+    hrow = raw.iloc[header_row]
+    col_map = {}
+    for j, val in enumerate(hrow):
+        s = str(val).strip() if pd.notna(val) else ""
+        if s == "Item Code":
+            col_map["Item Code"] = j
+        elif "Description" in s:
+            col_map.setdefault("Item Description", j)
+        elif "Markup" in s:
+            col_map["Markup %"] = j
+        elif "Profit %" in s or "GP %" in s:
+            col_map["Gross Profit %"] = j
+        elif "Profit" in s:
+            col_map.setdefault("Gross Profit", j)
+        elif s in ("Group", "Group Code"):
+            col_map["Group"] = j
+        elif "Quantity" in s or s in ("Qty", "Units"):
+            col_map["Quantity"] = j
+        elif s in ("Amount", "Sales Amount", "Revenue"):
+            col_map["Amount"] = j
+        elif "Cost" in s and "%" not in s:
+            col_map.setdefault("Cost", j)
+        elif "Date" in s:
+            col_map.setdefault("Date", j)
+
+    # Fallback: detect Date column by scanning data rows for Timestamp values
+    if "Date" not in col_map:
+        mapped_cols = set(col_map.values())
+        for probe_idx in range(header_row + 1, min(header_row + 30, len(raw))):
+            probe = raw.iloc[probe_idx]
+            for j, v in enumerate(probe):
+                if isinstance(v, pd.Timestamp) and j not in mapped_cols:
+                    col_map["Date"] = j
+                    break
+            if "Date" in col_map:
+                break
+
+    # Fallback: detect Group column — first column with short strings between
+    # Item Description and Date that isn't already mapped
+    if "Group" not in col_map:
+        mapped_cols = set(col_map.values())
+        desc_col = col_map.get("Item Description", item_code_col)
+        date_col = col_map.get("Date", len(hrow))
+        from collections import Counter
+        cand_counter = Counter()
+        for probe_idx in range(header_row + 1, min(header_row + 30, len(raw))):
+            probe = raw.iloc[probe_idx]
+            cell0 = str(probe.iloc[0]) if pd.notna(probe.iloc[0]) else ""
+            if cell0.startswith("Customer:"):
+                continue
+            for j in range(desc_col + 1, date_col):
+                v = probe.iloc[j]
+                if isinstance(v, str) and 2 <= len(v.strip()) <= 25 and j not in mapped_cols:
+                    cand_counter[j] += 1
+                    break
+        if cand_counter:
+            col_map["Group"] = cand_counter.most_common(1)[0][0]
+
+    required = ["Item Code", "Item Description", "Amount", "Gross Profit", "Gross Profit %"]
+    missing = [c for c in required if c not in col_map]
+    if missing:
+        raise ValueError(f"Could not detect columns: {missing}. Header row: {list(hrow)}")
+
+    # Extract year from filename as fallback (e.g. "2022.xls", "2026 - June.xls")
+    yr_match = re.search(r"\b(20\d{2})\b", filename)
+    fallback_year = int(yr_match.group(1)) if yr_match else None
+
+    def _get(row, key, default=None):
+        c = col_map.get(key)
+        if c is None:
+            return default
+        v = row.iloc[c]
+        return v if pd.notna(v) else default
 
     records = []
     current_customer = None
@@ -123,38 +190,39 @@ def parse_sales_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
     for idx in range(header_row + 1, len(raw)):
         row = raw.iloc[idx]
-        cell0 = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
 
+        # Customer header rows always appear in col 0
+        cell0 = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ""
         if cell0.startswith("Customer:"):
             m = re.match(r"Customer:\s+(\S+)\s+\((.+)\)", cell0)
             if m:
-                customer_id = m.group(1).strip()
-                current_customer = m.group(2).strip()
+                customer_id, current_customer = m.group(1).strip(), m.group(2).strip()
             else:
                 current_customer = cell0.replace("Customer:", "").strip()
                 customer_id = current_customer
             continue
 
-        if not cell0 or cell0 in ("nan", "NaT", "None"):
+        # Item Code is wherever the header said
+        item_val = str(row.iloc[item_code_col]) if pd.notna(row.iloc[item_code_col]) else ""
+        if not item_val or item_val in ("nan", "NaT", "None"):
             continue
-        amount_val = row.iloc[COL_MAP["Amount"]]
-        if pd.isna(row.iloc[COL_MAP["Item Description"]]) and pd.isna(amount_val):
+        if pd.isna(row.iloc[col_map["Item Description"]]) and pd.isna(row.iloc[col_map["Amount"]]):
             continue
 
         try:
             records.append({
                 "Customer ID": customer_id,
                 "Customer": current_customer,
-                "Item Code": str(row.iloc[COL_MAP["Item Code"]]).strip(),
-                "Item Description": str(row.iloc[COL_MAP["Item Description"]]).strip() if pd.notna(row.iloc[COL_MAP["Item Description"]]) else "",
-                "Date": pd.to_datetime(row.iloc[COL_MAP["Date"]], errors="coerce"),
-                "Group": str(row.iloc[COL_MAP["Group"]]).strip() if pd.notna(row.iloc[COL_MAP["Group"]]) else "",
-                "Quantity": pd.to_numeric(row.iloc[COL_MAP["Quantity"]], errors="coerce"),
-                "Amount": round(pd.to_numeric(row.iloc[COL_MAP["Amount"]], errors="coerce"), 2),
-                "Cost": round(pd.to_numeric(row.iloc[COL_MAP["Cost"]], errors="coerce"), 2),
-                "Gross Profit": round(pd.to_numeric(row.iloc[COL_MAP["Gross Profit"]], errors="coerce"), 2),
-                "Gross Profit %": round(pd.to_numeric(row.iloc[COL_MAP["Gross Profit %"]], errors="coerce"), 2),
-                "Markup %": round(pd.to_numeric(row.iloc[COL_MAP["Markup %"]], errors="coerce"), 2),
+                "Item Code": item_val,
+                "Item Description": str(_get(row, "Item Description", "")).strip(),
+                "Date": pd.to_datetime(_get(row, "Date"), errors="coerce"),
+                "Group": str(_get(row, "Group", "")).strip(),
+                "Quantity": pd.to_numeric(_get(row, "Quantity"), errors="coerce"),
+                "Amount": round(pd.to_numeric(_get(row, "Amount"), errors="coerce"), 2),
+                "Cost": round(pd.to_numeric(_get(row, "Cost"), errors="coerce"), 2),
+                "Gross Profit": round(pd.to_numeric(_get(row, "Gross Profit"), errors="coerce"), 2),
+                "Gross Profit %": round(pd.to_numeric(_get(row, "Gross Profit %"), errors="coerce"), 2),
+                "Markup %": round(pd.to_numeric(_get(row, "Markup %"), errors="coerce"), 2),
             })
         except Exception:
             continue
@@ -162,6 +230,8 @@ def parse_sales_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
     df = pd.DataFrame(records)
     df = df.dropna(subset=["Amount"])
     df["Year"] = df["Date"].dt.year
+    if fallback_year:
+        df["Year"] = df["Year"].fillna(fallback_year)
     return df
 
 
@@ -203,10 +273,11 @@ with st.sidebar:
     st.title("📦 Inventory Analysis")
     st.markdown("---")
 
-    uploaded = st.file_uploader(
-        "Upload Inventory Sales Analysis (.xls / .xlsx)",
+    uploaded_files = st.file_uploader(
+        "Upload Inventory Sales Files (.xls / .xlsx)",
         type=["xls", "xlsx"],
-        help="Upload the Inventory Sales Analysis report exported from your system.",
+        accept_multiple_files=True,
+        help="Upload one file per year — 2022, 2023, 2024, 2025, 2026",
     )
 
     if st.button("🔄 Reset", use_container_width=True):
@@ -216,11 +287,22 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Filters**")
 
-    if uploaded:
+    if uploaded_files:
         try:
-            raw_df = parse_sales_file(uploaded.getvalue(), uploaded.name)
+            all_dfs = []
+            for f in uploaded_files:
+                parsed = parse_sales_file(f.getvalue(), f.name)
+                all_dfs.append((f.name, parsed))
+
+            raw_df = pd.concat([d for _, d in all_dfs], ignore_index=True)
             group_list = load_group_list()
             full_df = merge_group_list(raw_df, group_list)
+
+            # Show a summary line per uploaded file
+            for fname, d in sorted(all_dfs, key=lambda x: x[0]):
+                yr_vals = d["Year"].dropna()
+                yr_label = int(yr_vals.iloc[0]) if len(yr_vals) > 0 else "?"
+                st.caption(f"✅ {yr_label} — {len(d):,} rows")
 
             customers = sorted(full_df["Customer"].dropna().unique())
             years = sorted(full_df["Year"].dropna().unique().astype(int))
@@ -235,6 +317,17 @@ with st.sidebar:
             sel_years = st.multiselect("Years", years, default=years)
             gp_threshold = st.slider("Gross Profit % Threshold", 0, 100, 50, step=1)
             exclude_negative = st.checkbox("Exclude negative Gross Profit", value=False)
+
+            st.markdown("---")
+            st.markdown("**Group List**")
+            st.download_button(
+                "⬇️ Download Group List",
+                data=to_excel_bytes(group_list[["Group", "Description", "Type", "Group_Category"]]),
+                file_name="Group List Review.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Download the Group List to review and correct Type classifications.",
+            )
 
             df = full_df.copy()
             if sel_customers:
@@ -252,6 +345,7 @@ with st.sidebar:
             st.error(f"Error parsing file: {e}")
             df = None
             full_df = None
+            df_with_negatives = None
     else:
         df = None
         full_df = None
@@ -269,10 +363,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if uploaded is None:
-    st.info("👈 Upload an **Inventory Sales Analysis** Excel file in the sidebar to get started.")
+if not uploaded_files:
+    st.info("👈 Upload one or more **Inventory Sales files** in the sidebar to get started.")
     st.markdown("""
-    **Expected format:** The standard Inventory Sales Analysis report with customer sections,
+    **Upload one file per year** (e.g. `2022.xls`, `2023.xls`, …, `2026 - June.xls`).
+    The app will combine all years into a single dashboard automatically.
+
+    **Expected format:** Inventory Sales Analysis report with customer sections,
     containing columns: Item Code, Item Description, Date, Group, Quantity, Amount, Cost, Gross Profit, Gross Profit %, Markup %.
 
     **Group List** is loaded automatically from `Group List.xls` placed beside this app.
@@ -809,6 +906,39 @@ with tab7:
             data=export_df.to_csv(index=False).encode("utf-8"),
             file_name="inventory_gp_analysis_filtered.csv",
             mime="text/csv",
+        )
+
+    st.markdown("---")
+    with st.expander("🔍 Group Audit — see how every Group Code is classified", expanded=False):
+        st.markdown(
+            "Cross-reference of every Group Code found in your uploaded data against the Group List. "
+            "Use this to spot misclassifications — then download the Group List from the sidebar, fix the **Type** column, "
+            "and send the updated file to have it reloaded."
+        )
+        # Build audit table from full_df (unfiltered) so all groups appear
+        audit = (
+            full_df.groupby(["Group", "Description", "Group_Category"], dropna=False)
+            .agg(Row_Count=("Amount", "count"), Total_Amount=("Amount", "sum"))
+            .reset_index()
+        )
+        audit = audit.sort_values("Group")
+        audit["Group_Category_Label"] = audit["Group_Category"].apply(
+            lambda x: CATEGORY_LABELS.get(x, str(x))
+        )
+        audit["Total_Amount"] = audit["Total_Amount"].apply(fmt_zar)
+        audit_display = audit.rename(columns={
+            "Group": "Group Code",
+            "Description": "Group Description",
+            "Group_Category_Label": "Category Applied",
+            "Row_Count": "Rows",
+            "Total_Amount": "Total Sales",
+        })[["Group Code", "Group Description", "Category Applied", "Rows", "Total Sales"]]
+        st.dataframe(audit_display, use_container_width=True, height=400)
+        st.download_button(
+            "⬇️ Download Group Audit",
+            data=to_excel_bytes(audit_display),
+            file_name="group_audit.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
 # ─── Tab 8: Negative Amounts ──────────────────────────────────────────────────
