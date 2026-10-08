@@ -296,7 +296,17 @@ def parse_sales_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 def merge_group_list(df: pd.DataFrame, group_list: pd.DataFrame) -> pd.DataFrame:
     gl = group_list[["Group", "Description", "Group_Category"]].copy()
     merged = df.merge(gl, on="Group", how="left")
-    merged["Group_Category"] = merged["Group_Category"].fillna("N/A")
+
+    def _to_cat(x):
+        if pd.isna(x) or str(x).strip() in ("", "nan", "None", "N/A"):
+            return "N/A"
+        try:
+            v = int(float(x))
+            return v if v in (1, 2, 3, 4, 5, 6, 7) else "N/A"
+        except (ValueError, TypeError):
+            return "N/A"
+
+    merged["Group_Category"] = merged["Group_Category"].apply(_to_cat)
     return merged
 
 
