@@ -90,7 +90,6 @@ def fmt_num(value):
 GROUP_LIST_PATH = Path(__file__).parent / "Group List.xlsx"
 
 
-@st.cache_data(show_spinner="Loading Group List…")
 def load_group_list():
     if not GROUP_LIST_PATH.exists():
         return pd.DataFrame(columns=["Group", "Description", "Type", "Group_Category"])
