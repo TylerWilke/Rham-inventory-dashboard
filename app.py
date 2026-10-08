@@ -149,7 +149,9 @@ def parse_item_list(file_bytes: bytes) -> pd.DataFrame:
 
 @st.cache_data(show_spinner="Parsing sales file…")
 def parse_sales_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
-    raw = pd.read_excel(io.BytesIO(file_bytes), header=None)
+    ext = Path(filename).suffix.lower()
+    engine = "xlrd" if ext == ".xls" else "openpyxl"
+    raw = pd.read_excel(io.BytesIO(file_bytes), header=None, engine=engine)
 
     # Scan up to first 60 rows for a row that contains "Item Code" in any column
     header_row = None
