@@ -537,7 +537,7 @@ with st.sidebar:
             customers = sorted(full_df["Customer"].dropna().unique())
             years = sorted(full_df["Year"].dropna().unique().astype(int))
             all_categories = [1, 2, 3, 4, 5, 6, 7, "N/A"]
-            default_categories = [1, 2, 3, 4, 5, 6, 7]
+            default_categories = [1, 2, 3, 4, 5, 6, 7, "N/A"]
 
             sel_customers = st.multiselect("Customers", customers, default=customers)
             sel_categories = st.multiselect(
