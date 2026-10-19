@@ -57,25 +57,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 CATEGORY_LABELS = {
-    1: "1 – Buy Outs",
-    2: "2 – Value Add",
-    3: "3 – Manufacturing",
-    4: "4 – Capital Goods",
-    5: "5 – Regular Repairs",
-    6: "6 – Technicians Labour",
-    7: "7 – Special Items",
+    1: "Buy Outs",
+    2: "Value Add",
+    3: "Manufacturing",
+    4: "Capital Goods",
+    5: "Regular Repairs",
+    6: "Technicians Labour",
+    7: "Lubricants",
+    8: "Deposits",
     "N/A": "N/A",
 }
 
 # Preset GP thresholds per category (used by the Category Analysis tabs)
+# Display order for category lists and tables
+CATEGORY_ORDER = [4, 8, 2, 5, 3, 1, 6, 7, "N/A"]
+
 CATEGORY_PRESETS = {
-    1: {"label": "1 – Buy Outs",          "threshold": 20, "emoji": "🛒"},
-    2: {"label": "2 – Value Add",          "threshold": 35, "emoji": "⚙️"},
-    3: {"label": "3 – Manufacturing",      "threshold": 55, "emoji": "🏭"},
-    4: {"label": "4 – Capital Goods",      "threshold": 55, "emoji": "🏗️"},
-    5: {"label": "5 – Regular Repairs",    "threshold": 35, "emoji": "🔧"},
-    6: {"label": "6 – Technicians Labour", "threshold": 20, "emoji": "👷"},
-    7: {"label": "7 – Special Items",      "threshold": 12, "emoji": "⭐"},
+    1: {"label": "Buy Outs",              "threshold": 20, "emoji": "🛒"},
+    2: {"label": "Value Add",              "threshold": 35, "emoji": "⚙️"},
+    3: {"label": "Manufacturing",          "threshold": 55, "emoji": "🏭"},
+    4: {"label": "Capital Goods",          "threshold": 55, "emoji": "🏗️"},
+    5: {"label": "Regular Repairs",        "threshold": 35, "emoji": "🔧"},
+    6: {"label": "Technicians Labour",     "threshold": 20, "emoji": "👷"},
+    7: {"label": "Lubricants",             "threshold": 12, "emoji": "🛢️"},
 }
 
 def fmt_zar(value):
@@ -97,20 +101,22 @@ def load_group_list():
     # Skip header row if present
     first = str(raw.iloc[0, 0]).strip().lower()
     df = raw.iloc[1:].copy() if first == "group" else raw.copy()
-    # Use Group_Category (col 3) if available, else fall back to Type (col 2)
+    # Category comes from Type (col 2), falling back to Group_Category (col 3)
     has_cat_col = df.shape[1] >= 4
     df = df.iloc[:, :4] if has_cat_col else df.iloc[:, :3]
     if has_cat_col:
         df.columns = ["Group", "Description", "Type", "Group_Category"]
         df["Group"] = df["Group"].astype(str).str.strip()
-        raw_cat = df["Group_Category"]
+        # Type is the column users edit; Group_Category only fills gaps
+        raw_cat = df["Type"].where(pd.to_numeric(df["Type"], errors="coerce").isin(range(1, 9)),
+                                   df["Group_Category"])
     else:
         df.columns = ["Group", "Description", "Type"]
         df["Group"] = df["Group"].astype(str).str.strip()
         raw_cat = df["Type"]
     df["Group_Category"] = raw_cat.apply(
         lambda x: int(x) if pd.notna(x) and str(x).strip() not in ("", "None", "N/A", "nan")
-                  and pd.to_numeric(x, errors="coerce") in (1, 2, 3, 4, 5, 6, 7) else "N/A"
+                  and pd.to_numeric(x, errors="coerce") in (1, 2, 3, 4, 5, 6, 7, 8) else "N/A"
     )
     return df.reset_index(drop=True)
 
@@ -301,7 +307,7 @@ def merge_group_list(df: pd.DataFrame, group_list: pd.DataFrame) -> pd.DataFrame
             return "N/A"
         try:
             v = int(float(x))
-            return v if v in (1, 2, 3, 4, 5, 6, 7) else "N/A"
+            return v if v in (1, 2, 3, 4, 5, 6, 7, 8) else "N/A"
         except (ValueError, TypeError):
             return "N/A"
 
@@ -543,10 +549,17 @@ with st.sidebar:
                 yr_label = int(yr_vals.iloc[0]) if len(yr_vals) > 0 else "?"
                 st.caption(f"✅ {yr_label} — {len(d):,} rows")
 
+            exclude_deposits = st.toggle(
+                "Exclude deposits", value=False,
+                help="Removes capital equipment deposits from every tab, chart and total.",
+            )
+            if exclude_deposits:
+                full_df = full_df[full_df["Group_Category"] != 8]
+
             customers = sorted(full_df["Customer"].dropna().unique())
             years = sorted(full_df["Year"].dropna().unique().astype(int))
-            all_categories = [1, 2, 3, 4, 5, 6, 7, "N/A"]
-            default_categories = [1, 2, 3, 4, 5, 6, 7, "N/A"]
+            all_categories = CATEGORY_ORDER
+            default_categories = CATEGORY_ORDER
 
             sel_customers = st.multiselect("Customers", customers, default=customers)
             sel_categories = st.multiselect(
@@ -591,17 +604,19 @@ with st.sidebar:
         df_with_negatives = None
         gp_threshold = 50
         exclude_negative = False
+        exclude_deposits = False
 
     st.markdown("---")
     st.caption(
         "Group Categories:\n"
-        "- **1** Buy Outs (20% target)\n"
-        "- **2** Value Add (35% target)\n"
-        "- **3** Manufacturing (55% target)\n"
-        "- **4** Capital Goods (55% target)\n"
-        "- **5** Regular Repairs (35% target)\n"
-        "- **6** Technicians Labour (20% target)\n"
-        "- **7** Special Items (12% target)\n"
+        "- **Capital Goods** (55% target)\n"
+        "- **Deposits** (no target)\n"
+        "- **Value Add** (35% target)\n"
+        "- **Regular Repairs** (35% target)\n"
+        "- **Manufacturing** (55% target)\n"
+        "- **Buy Outs** (20% target)\n"
+        "- **Technicians Labour** (20% target)\n"
+        "- **Lubricants** (12% target)\n"
         "- **N/A** Unclassified (opt-in)"
     )
 
@@ -621,7 +636,7 @@ if not uploaded_files:
     **Expected format:** Inventory Sales Analysis report with customer sections,
     containing columns: Item Code, Item Description, Date, Group, Quantity, Amount, Cost, Gross Profit, Gross Profit %, Markup %.
 
-    **Group List** is loaded automatically from `Group List.xls` placed beside this app.
+    **Group List** is loaded automatically from `Group List.xlsx` placed beside this app.
     """)
     st.stop()
 
@@ -629,17 +644,19 @@ if df is None or len(df) == 0:
     st.warning("No data matches the current filters.")
     st.stop()
 
-tab1, \
-    cat1, cat2, cat3, cat4, cat5, cat6, cat7, \
+tab1, tab_gp, cat4, tab_dep, cat2, cat5, cat3, cat1, cat6, cat7, tab_na, \
     tab3, tab2, tab4, tab5, tab6, tab7, tab8, tab_items = st.tabs([
     "📊 Overview",
-    "🛒 Buy Outs",
-    "⚙️ Value Add",
-    "🏭 Manufacturing",
+    "🔎 GP Breakdown",
     "🏗️ Capital Goods",
+    "🏦 Deposits",
+    "⚙️ Value Add",
     "🔧 Repairs",
+    "🏭 Manufacturing",
+    "🛒 Buy Outs",
     "👷 Labour",
-    "⭐ Special Items",
+    "🛢️ Lubricants",
+    "❓ N/A Unclassified",
     "💸 Profit Lost",
     "⚠️ Low GP Analysis",
     "👤 GP by Customer",
@@ -691,7 +708,7 @@ with tab1:
     )
     # Sort: categories 1-7 first, then N/A
     cat_recon["_sort"] = cat_recon["Group_Category"].apply(
-        lambda x: x if isinstance(x, int) else 99
+        lambda x: CATEGORY_ORDER.index(x) if x in CATEGORY_ORDER else 99
     )
     cat_recon = cat_recon.sort_values("_sort").drop(columns="_sort")
 
@@ -776,6 +793,389 @@ with tab1:
     disp = df[display_cols].copy()
     styled = apply_gp_style(disp, gp_threshold)
     st.dataframe(styled, use_container_width=True, height=400)
+
+# ─── GP Breakdown: what makes up total Gross Profit ──────────────────────────
+with tab_gp:
+    bd_sales = df["Amount"].sum()
+    bd_gp    = df["Gross Profit"].sum()
+    bd_pct   = (bd_gp / bd_sales * 100) if bd_sales else 0
+
+    # Lines with no (or negative) cost book the whole sale as profit — deposits,
+    # admin fees, or items where the cost was never captured.
+    no_cost      = df[df["Cost"].fillna(0) <= 0]
+    no_cost_gp   = no_cost["Gross Profit"].sum()
+    costed       = df[df["Cost"].fillna(0) > 0]
+    costed_sales = costed["Amount"].sum()
+    costed_pct   = (costed["Gross Profit"].sum() / costed_sales * 100) if costed_sales else 0
+
+    item_gp = (df.groupby(["Item Code", "Item Description"], as_index=False)["Gross Profit"].sum()
+                 .sort_values("Gross Profit", ascending=False))
+    top10_share = (item_gp["Gross Profit"].head(10).sum() / bd_gp * 100) if bd_gp else 0
+
+    st.subheader("What Makes Up Total Gross Profit")
+    st.caption("Uses the sidebar filters. Start with the zero-cost lines — they count the full sale as profit.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total Gross Profit", f"R {bd_gp / 1e6:,.1f}M", f"{bd_pct:.2f}% GP", delta_color="off")
+    c2.metric("GP from Zero/Negative Cost Lines", f"R {no_cost_gp / 1e6:,.1f}M",
+              f"{(no_cost_gp / bd_gp * 100) if bd_gp else 0:.2f}% of total GP", delta_color="off")
+    c3.metric("GP % Excluding Zero-Cost Lines", fmt_pct(costed_pct),
+              f"{costed_pct - bd_pct:+.2f} pp vs reported", delta_color="off")
+    c4.metric("Top 10 Items' Share of GP", fmt_pct(top10_share))
+
+    # ── Waterfall: how each category builds up the total ─────────────────────
+    st.markdown("---")
+    wf = df.groupby("Group_Category", as_index=False).agg(
+        Sales=("Amount", "sum"), **{"Gross Profit": ("Gross Profit", "sum")})
+    wf["Category"] = wf["Group_Category"].map(CATEGORY_LABELS).fillna("N/A")
+    wf = wf.sort_values("Gross Profit", ascending=False)
+    # Category name with its own GP % underneath
+    wf_pct = (wf["Gross Profit"] / wf["Sales"] * 100).where(wf["Sales"] != 0)
+    wf_x = [f"{c}<br><b>{p:.1f}% GP</b>" if pd.notna(p) else c for c, p in zip(wf["Category"], wf_pct)]
+    fig_wf = go.Figure(go.Waterfall(
+        x=wf_x + [f"TOTAL GP<br><b>{bd_pct:.1f}% GP</b>"],
+        y=list(wf["Gross Profit"]) + [bd_gp],
+        measure=["relative"] * len(wf) + ["total"],
+        text=[fmt_zar(v) for v in wf["Gross Profit"]] + [fmt_zar(bd_gp)],
+        textposition="outside",
+        increasing={"marker": {"color": NAVY_LIGHT}},
+        decreasing={"marker": {"color": STEEL}},
+        totals={"marker": {"color": NAVY}},
+    ))
+    fig_wf.update_layout(title="Gross Profit Build-up by Category", yaxis_title="Gross Profit (R)",
+                         showlegend=False)
+    st.plotly_chart(fig_wf, use_container_width=True)
+
+    # ── Drill-down: rank any dimension by GP contribution ────────────────────
+    st.markdown("---")
+    st.markdown("### GP Contributors")
+    dim_options = {
+        "Group": ["Group", "Description"],
+        "Item": ["Item Code", "Item Description", "Group"],
+        "Customer": ["Customer"],
+        "Group Category": ["Group_Category"],
+        "Year": ["Year"],
+    }
+    dc1, dc2 = st.columns([2, 1])
+    dim = dc1.radio("Break GP down by", list(dim_options), horizontal=True, key="gp_bd_dim")
+    top_n = dc2.slider("Show top", 5, 50, 20, step=5, key="gp_bd_topn")
+
+    keys = dim_options[dim]
+    contrib = df.groupby(keys, dropna=False).agg(
+        Lines=("Amount", "size"),
+        Quantity=("Quantity", "sum"),
+        Sales=("Amount", "sum"),
+        Cost=("Cost", "sum"),
+        GP=("Gross Profit", "sum"),
+    ).reset_index().sort_values("GP", ascending=False)
+    contrib["GP %"]          = (contrib["GP"] / contrib["Sales"] * 100).where(contrib["Sales"] != 0)
+    contrib["Share of GP %"] = contrib["GP"] / bd_gp * 100 if bd_gp else 0
+    contrib["Cumulative %"]  = contrib["Share of GP %"].cumsum()
+    if dim == "Group Category":
+        contrib["Group_Category"] = contrib["Group_Category"].map(CATEGORY_LABELS).fillna("N/A")
+    contrib["Label"] = contrib[keys[0]].astype(str)
+
+    top = contrib.head(top_n)
+    fig_p = go.Figure()
+    fig_p.add_bar(x=top["Label"], y=top["GP"], name="Gross Profit", marker_color=NAVY)
+    fig_p.add_scatter(x=top["Label"], y=top["Cumulative %"], name="Cumulative % of GP",
+                      yaxis="y2", mode="lines+markers", line={"color": STEEL})
+    fig_p.update_layout(
+        title=f"Top {len(top)} by Gross Profit — {top['Share of GP %'].sum():.1f}% of total GP",
+        yaxis={"title": "Gross Profit (R)"},
+        yaxis2={"title": "Cumulative %", "overlaying": "y", "side": "right", "range": [0, 105]},
+        legend={"orientation": "h", "y": -0.25},
+    )
+    st.plotly_chart(fig_p, use_container_width=True)
+
+    contrib_disp = contrib.drop(columns="Label").head(top_n).copy()
+    for col in ("Sales", "Cost", "GP"):
+        contrib_disp[col] = contrib_disp[col].apply(fmt_zar)
+    for col in ("GP %", "Share of GP %", "Cumulative %"):
+        contrib_disp[col] = contrib_disp[col].apply(lambda v: fmt_pct(v) if pd.notna(v) else "")
+    st.dataframe(contrib_disp, use_container_width=True, hide_index=True)
+    st.download_button(
+        f"⬇️ Download full GP by {dim}",
+        data=to_excel_bytes(contrib.drop(columns="Label")),
+        file_name=f"GP by {dim}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    # ── Treemap: category → group, sized by GP ───────────────────────────────
+    st.markdown("---")
+    tm = df.groupby(["Group_Category", "Group"], as_index=False).agg(
+        Sales=("Amount", "sum"), GP=("Gross Profit", "sum"))
+    tm = tm[tm["GP"] > 0]
+    tm["Category"] = tm["Group_Category"].map(CATEGORY_LABELS).fillna("N/A")
+    tm["GP %"] = (tm["GP"] / tm["Sales"] * 100).round(1)
+    fig_tm = px.treemap(tm, path=["Category", "Group"], values="GP", color="GP %",
+                        color_continuous_scale="Blues", hover_data={"Sales": ":,.0f", "GP": ":,.0f"},
+                        title="Where the Gross Profit Sits — box size = GP, colour = GP %")
+    st.plotly_chart(fig_tm, use_container_width=True)
+    st.caption("Groups with zero or negative total GP are left out of the treemap.")
+
+    # ── Zero / negative cost lines ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(f"### Zero or Negative Cost Lines  ({len(no_cost):,} lines)".replace(",", " "))
+    if no_cost.empty:
+        st.success("Every line has a cost recorded.")
+    else:
+        st.caption(
+            "These lines have no cost against them, so the whole sale counts as gross profit. "
+            "Check whether the cost was missed (e.g. machines, repairs) or whether the line "
+            "isn't really a sale (e.g. deposits, admin)."
+        )
+        nc = no_cost.groupby(["Group", "Item Code", "Item Description"], as_index=False).agg(
+            Lines=("Amount", "size"),
+            Sales=("Amount", "sum"),
+            Cost=("Cost", "sum"),
+            GP=("Gross Profit", "sum"),
+        ).sort_values("GP", ascending=False)
+        nc["Share of Total GP %"] = nc["GP"] / bd_gp * 100 if bd_gp else 0
+        nc_disp = nc.copy()
+        for col in ("Sales", "Cost", "GP"):
+            nc_disp[col] = nc_disp[col].apply(fmt_zar)
+        nc_disp["Share of Total GP %"] = nc_disp["Share of Total GP %"].apply(fmt_pct)
+        st.dataframe(nc_disp, use_container_width=True, hide_index=True, height=350)
+
+        with st.expander("View every zero/negative cost line"):
+            st.dataframe(
+                no_cost[["Customer", "Item Code", "Item Description", "Date", "Group",
+                         "Quantity", "Amount", "Cost", "Gross Profit", "Gross Profit %"]]
+                .sort_values("Gross Profit", ascending=False),
+                use_container_width=True, hide_index=True,
+            )
+        st.download_button(
+            "⬇️ Download zero/negative cost lines",
+            data=to_excel_bytes(no_cost),
+            file_name="Zero Cost Lines.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    # ── Biggest single lines ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 20 Biggest Single Lines by Gross Profit")
+    big = df.nlargest(20, "Gross Profit")[["Customer", "Item Code", "Item Description", "Date", "Group",
+                                           "Quantity", "Amount", "Cost", "Gross Profit", "Gross Profit %"]]
+    big = big.assign(**{"Share of Total GP %": big["Gross Profit"] / bd_gp * 100 if bd_gp else 0})
+    st.dataframe(big, use_container_width=True, hide_index=True)
+
+# ─── N/A Unclassified: lines with no Group Category ──────────────────────────
+with tab_na:
+    # Ignores the Group Category filter so N/A lines show even when deselected
+    na_base = full_df.copy()
+    if sel_customers:
+        na_base = na_base[na_base["Customer"].isin(sel_customers)]
+    if sel_years:
+        na_base = na_base[na_base["Year"].isin(sel_years)]
+    if exclude_negative:
+        na_base = na_base[na_base["Gross Profit"] >= 0]
+    na = na_base[na_base["Group_Category"] == "N/A"].copy()
+
+    st.subheader("N/A — Lines Without a Group Category")
+    st.caption("Uses the Customer, Year and negative-GP filters, but always shows N/A lines — "
+               "even if N/A is deselected under Group Category.")
+
+    if na.empty:
+        st.success("Every line has a Group Category.")
+    else:
+        listed_groups = set(group_list["Group"])
+
+        def _na_reason(g):
+            if not g or g in ("nan", "None"):
+                return "No group code on the line"
+            if g in listed_groups:
+                return "In Group List but Type is blank"
+            return "Group code missing from Group List"
+
+        na["Reason"] = na["Group"].apply(_na_reason)
+        na_sales = na["Amount"].sum()
+        na_gp    = na["Gross Profit"].sum()
+        base_gp  = na_base["Gross Profit"].sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("N/A Sales", f"R {na_sales / 1e6:,.1f}M")
+        c2.metric("N/A Gross Profit", f"R {na_gp / 1e6:,.1f}M",
+                  f"{(na_gp / base_gp * 100) if base_gp else 0:.2f}% of total GP", delta_color="off")
+        c3.metric("N/A GP %", fmt_pct(na_gp / na_sales * 100) if na_sales else "—")
+        c4.metric("Group Codes to Classify", f"{na['Group'].nunique():,}")
+
+        # ── Why lines are N/A ────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Why These Lines Are N/A")
+        reasons = na.groupby("Reason", as_index=False).agg(
+            Groups=("Group", "nunique"),
+            Lines=("Amount", "size"),
+            Sales=("Amount", "sum"),
+            GP=("Gross Profit", "sum"),
+        ).sort_values("GP", ascending=False)
+        reasons_disp = reasons.copy()
+        for col in ("Sales", "GP"):
+            reasons_disp[col] = reasons_disp[col].apply(fmt_zar)
+        st.dataframe(reasons_disp, use_container_width=True, hide_index=True)
+        st.caption(
+            "**Missing from Group List** — add the code to the Group List with a Type (1–7).  \n"
+            "**Type is blank** — the code is in the Group List but has no Type; fill it in.  \n"
+            "**No group code** — the item has no group in Sage; fix the item master."
+        )
+
+        # ── By group code ────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### N/A Gross Profit by Group Code")
+        by_grp = na.groupby(["Group", "Reason"], as_index=False, dropna=False).agg(
+            Lines=("Amount", "size"),
+            Sales=("Amount", "sum"),
+            Cost=("Cost", "sum"),
+            GP=("Gross Profit", "sum"),
+        ).sort_values("GP", ascending=False)
+        desc = group_list.drop_duplicates("Group").set_index("Group")["Description"]
+        by_grp.insert(1, "Description", by_grp["Group"].map(desc))
+        by_grp["GP %"]            = (by_grp["GP"] / by_grp["Sales"] * 100).where(by_grp["Sales"] != 0)
+        by_grp["Share of N/A GP %"] = by_grp["GP"] / na_gp * 100 if na_gp else 0
+
+        top_grp = by_grp.head(15).copy()
+        top_grp["Label"] = top_grp["Group"].replace("", "(blank)")
+        fig_na = px.bar(top_grp, x="GP", y="Label", orientation="h", color="Reason",
+                        title="Top 15 N/A Group Codes by Gross Profit",
+                        color_discrete_sequence=[NAVY, STEEL, SLATE],
+                        labels={"GP": "Gross Profit (R)", "Label": ""})
+        fig_na.update_layout(yaxis={"categoryorder": "total ascending"}, legend_title="")
+        st.plotly_chart(fig_na, use_container_width=True)
+
+        grp_disp = by_grp.copy()
+        grp_disp["Group"] = grp_disp["Group"].replace("", "(blank)")
+        for col in ("Sales", "Cost", "GP"):
+            grp_disp[col] = grp_disp[col].apply(fmt_zar)
+        for col in ("GP %", "Share of N/A GP %"):
+            grp_disp[col] = grp_disp[col].apply(lambda v: fmt_pct(v) if pd.notna(v) else "")
+        st.dataframe(grp_disp, use_container_width=True, hide_index=True, height=350)
+
+        # Same layout as the Group List so Type can be filled in and sent back
+        to_classify = by_grp[["Group", "Description"]].assign(Type="", Group_Category="")
+        to_classify = to_classify.join(by_grp[["Lines", "Sales", "GP"]])
+        to_classify = to_classify[to_classify["Group"] != ""]
+        st.download_button(
+            "⬇️ Download N/A groups to classify",
+            data=to_excel_bytes(to_classify),
+            file_name="N-A Groups to Classify.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Fill in the Type column (1–7), then add these rows to the Group List.",
+        )
+
+        # ── Top items ────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Top 20 N/A Items by Gross Profit")
+        na_items = na.groupby(["Item Code", "Item Description", "Group"], as_index=False).agg(
+            Lines=("Amount", "size"),
+            Sales=("Amount", "sum"),
+            Cost=("Cost", "sum"),
+            GP=("Gross Profit", "sum"),
+        ).sort_values("GP", ascending=False).head(20)
+        na_items["Share of N/A GP %"] = na_items["GP"] / na_gp * 100 if na_gp else 0
+        items_disp = na_items.copy()
+        for col in ("Sales", "Cost", "GP"):
+            items_disp[col] = items_disp[col].apply(fmt_zar)
+        items_disp["Share of N/A GP %"] = items_disp["Share of N/A GP %"].apply(fmt_pct)
+        st.dataframe(items_disp, use_container_width=True, hide_index=True)
+
+        with st.expander(f"View all {len(na):,} N/A lines".replace(",", " ")):
+            st.dataframe(
+                na[["Customer", "Item Code", "Item Description", "Date", "Group", "Reason",
+                    "Quantity", "Amount", "Cost", "Gross Profit", "Gross Profit %"]]
+                .sort_values("Gross Profit", ascending=False),
+                use_container_width=True, hide_index=True,
+            )
+        st.download_button(
+            "⬇️ Download all N/A lines",
+            data=to_excel_bytes(na),
+            file_name="N-A Lines.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+# ─── Deposits: category 8, kept apart from product sales ─────────────────────
+with tab_dep:
+    st.subheader("Deposits — Capital Equipment")
+    if exclude_deposits:
+        st.info("Deposits are excluded from the whole dashboard. Switch off **Exclude deposits** "
+                "in the sidebar to see them here.")
+
+    # Ignores the Group Category and negative-GP filters: deposits are invoiced and later
+    # reversed with credit notes, so both sides are needed to see the net amount.
+    dep_base = full_df.copy()
+    if sel_customers:
+        dep_base = dep_base[dep_base["Customer"].isin(sel_customers)]
+    if sel_years:
+        dep_base = dep_base[dep_base["Year"].isin(sel_years)]
+    dep = dep_base[dep_base["Group_Category"] == 8]
+
+    # Headline comparison counts lines the same way the rest of the dashboard does
+    head_base = dep_base[dep_base["Gross Profit"] >= 0] if exclude_negative else dep_base
+    non_dep   = head_base[head_base["Group_Category"] != 8]
+
+    if dep.empty:
+        if not exclude_deposits:
+            st.info("No deposit lines in the current selection.")
+    else:
+        st.caption("Deposits carry no cost, so every deposit is 100% gross profit. Each deposit is "
+                   "invoiced, then reversed with a credit note when the machine is invoiced — Sage "
+                   "shows those credit notes at 0% GP, which is why averaged GP % looks lower.")
+        invoiced = dep.loc[dep["Amount"] > 0, "Amount"].sum()
+        reversed_ = dep.loc[dep["Amount"] < 0, "Amount"].sum()
+        net_dep  = invoiced + reversed_
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Deposits Invoiced", f"R {invoiced / 1e6:,.1f}M",
+                  f"{(dep['Amount'] > 0).sum():,} lines", delta_color="off")
+        c2.metric("Reversed (Credit Notes)", f"R {reversed_ / 1e6:,.1f}M",
+                  f"{(dep['Amount'] < 0).sum():,} lines", delta_color="off")
+        c3.metric("Net Deposits", f"R {net_dep / 1e6:,.1f}M")
+        c4.metric("Deposit Cost", fmt_zar(dep["Cost"].sum()))
+
+        all_sales, all_gp = head_base["Amount"].sum(), head_base["Gross Profit"].sum()
+        nd_sales, nd_gp   = non_dep["Amount"].sum(), non_dep["Gross Profit"].sum()
+        all_pct = (all_gp / all_sales * 100) if all_sales else 0
+        nd_pct  = (nd_gp / nd_sales * 100) if nd_sales else 0
+        counted = head_base.loc[head_base["Group_Category"] == 8, "Gross Profit"].sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Deposit GP Counted in Totals", f"R {counted / 1e6:,.1f}M")
+        c2.metric("Share of Total GP", fmt_pct(counted / all_gp * 100) if all_gp else "—")
+        c3.metric("GP % Including Deposits", fmt_pct(all_pct))
+        c4.metric("GP % Excluding Deposits", fmt_pct(nd_pct), f"{nd_pct - all_pct:+.2f} pp", delta_color="off")
+        if exclude_negative and reversed_ < 0:
+            st.warning(f"**Exclude negative Gross Profit** is on, so the {fmt_zar(-reversed_)} of credit notes "
+                       f"are dropped and the dashboard counts deposits at {fmt_zar(invoiced)} instead of the "
+                       f"net {fmt_zar(net_dep)}.")
+
+        st.markdown("---")
+        col_left, col_right = st.columns(2)
+        with col_left:
+            dep_cust = dep.groupby("Customer", as_index=False).agg(
+                Lines=("Amount", "size"), Deposits=("Amount", "sum")
+            ).sort_values("Deposits", ascending=False)
+            fig_dc = px.bar(dep_cust.head(15), x="Deposits", y="Customer", orientation="h",
+                            title="Net Deposits by Customer", color_discrete_sequence=[NAVY])
+            fig_dc.update_layout(yaxis={"categoryorder": "total ascending"}, xaxis_title="Deposits (R)")
+            st.plotly_chart(fig_dc, use_container_width=True)
+        with col_right:
+            dep_month = (dep.dropna(subset=["Date"])
+                            .assign(Month=lambda d: d["Date"].dt.to_period("M").dt.to_timestamp())
+                            .groupby("Month", as_index=False)["Amount"].sum())
+            fig_dm = px.bar(dep_month, x="Month", y="Amount", title="Net Deposits by Month",
+                            color_discrete_sequence=[NAVY_LIGHT], labels={"Amount": "Deposits (R)"})
+            st.plotly_chart(fig_dm, use_container_width=True)
+
+        st.markdown("#### Deposit Lines")
+        dep_cols = [c for c in ["Customer", "Item Code", "Item Description", "Date", "Group",
+                                "Invoice", "Quantity", "Amount", "Cost", "Gross Profit"] if c in dep.columns]
+        st.dataframe(dep[dep_cols].sort_values("Amount", ascending=False),
+                     use_container_width=True, hide_index=True)
+        st.download_button(
+            "⬇️ Download deposit lines",
+            data=to_excel_bytes(dep[dep_cols]),
+            file_name="Deposits.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 # ─── Tab 2: Low Gross Profit Analysis ────────────────────────────────────────
 with tab2:
@@ -1373,7 +1773,7 @@ with tab_items:
             lambda c: CATEGORY_PRESETS[c]["threshold"] if c in CATEGORY_PRESETS else None
         )
         item_df["Category Label"] = item_df["Group_Category"].apply(
-            lambda c: CATEGORY_PRESETS[c]["label"] if c in CATEGORY_PRESETS else "N/A"
+            lambda c: CATEGORY_LABELS.get(c, "N/A")
         )
         item_df["Below Target"] = (
             item_df["GP %"].notna()
