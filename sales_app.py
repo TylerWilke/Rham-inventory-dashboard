@@ -754,12 +754,25 @@ with tab_gp:
         "Group Category": ["Group_Category"],
         "Year": ["Year"],
     }
-    dc1, dc2 = st.columns([2, 1])
+    dc1, dc2, dc3 = st.columns([2, 1, 1])
     dim = dc1.radio("Break GP down by", list(dim_options), horizontal=True, key="gp_bd_dim")
-    top_n = dc2.slider("Show top", 5, 50, 20, step=5, key="gp_bd_topn")
+    cat_choices = ["All"] + [c for c in CATEGORY_ORDER if c in set(df["Group_Category"])]
+    if dim == "Group Category":
+        contrib_cat = "All"
+    else:
+        contrib_cat = dc2.selectbox(
+            "Category", cat_choices, key="gp_bd_cat",
+            format_func=lambda c: "All categories" if c == "All" else CATEGORY_LABELS.get(c, str(c)),
+        )
+    top_n = dc3.slider("Show top", 5, 50, 20, step=5, key="gp_bd_topn")
+
+    # Pareto within one category: shares are of that category's GP
+    contrib_src = df if contrib_cat == "All" else df[df["Group_Category"] == contrib_cat]
+    contrib_gp = contrib_src["Gross Profit"].sum()
+    scope_label = "total GP" if contrib_cat == "All" else f"{CATEGORY_LABELS.get(contrib_cat, contrib_cat)} GP"
 
     keys = dim_options[dim]
-    contrib = df.groupby(keys, dropna=False).agg(
+    contrib = contrib_src.groupby(keys, dropna=False).agg(
         Lines=("Amount", "size"),
         Quantity=("Quantity", "sum"),
         Sales=("Amount", "sum"),
@@ -767,7 +780,7 @@ with tab_gp:
         GP=("Gross Profit", "sum"),
     ).reset_index().sort_values("GP", ascending=False)
     contrib["GP %"]          = (contrib["GP"] / contrib["Sales"] * 100).where(contrib["Sales"] != 0)
-    contrib["Share of GP %"] = contrib["GP"] / bd_gp * 100 if bd_gp else 0
+    contrib["Share of GP %"] = contrib["GP"] / contrib_gp * 100 if contrib_gp else 0
     contrib["Cumulative %"]  = contrib["Share of GP %"].cumsum()
     if dim == "Group Category":
         contrib["Group_Category"] = contrib["Group_Category"].map(CATEGORY_LABELS).fillna("N/A")
@@ -779,7 +792,7 @@ with tab_gp:
     fig_p.add_scatter(x=top["Label"], y=top["Cumulative %"], name="Cumulative % of GP",
                       yaxis="y2", mode="lines+markers", line={"color": STEEL})
     fig_p.update_layout(
-        title=f"Top {len(top)} by Gross Profit — {top['Share of GP %'].sum():.1f}% of total GP",
+        title=f"Top {len(top)} by Gross Profit — {top['Share of GP %'].sum():.1f}% of {scope_label}",
         yaxis={"title": "Gross Profit (R)"},
         yaxis2={"title": "Cumulative %", "overlaying": "y", "side": "right", "range": [0, 105]},
         legend={"orientation": "h", "y": -0.25},
@@ -795,7 +808,9 @@ with tab_gp:
     st.download_button(
         f"⬇️ Download full GP by {dim}",
         data=to_excel_bytes(contrib.drop(columns="Label")),
-        file_name=f"GP by {dim}.xlsx",
+        file_name=f"GP by {dim}"
+                  + ("" if contrib_cat == "All" else f" - {CATEGORY_LABELS.get(contrib_cat, contrib_cat)}")
+                  + ".xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
