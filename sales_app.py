@@ -293,6 +293,10 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
             key=f"cat_thresh_{cat_id}",
             help=f"Default for {label} is {default}%. Drag to adjust.",
         )
+    show_lost = st.toggle(
+        "Show profit lost", value=False, key=f"show_lost_{cat_id}",
+        help="Off: just the items under target. On: adds Target GP, Profit Lost and the Action Plan.",
+    )
 
     cat_df = base_df[base_df["Group_Category"] == cat_id].copy()
 
@@ -321,7 +325,12 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
     c1.metric("Total Sales",         fmt_zar(total_sales))
     c2.metric("Total Gross Profit",  fmt_zar(total_gp))
     c3.metric("Overall GP %",        fmt_pct(overall_gp_pct))
-    c4.metric(f"Profit Lost (below {thresh}%)", fmt_zar(total_lost))
+    if show_lost:
+        c4.metric(f"Profit Lost (below {thresh}%)", fmt_zar(total_lost))
+    else:
+        c4.metric(f"Lines Below {thresh}%", f"{len(low):,}".replace(",", " "),
+                  f"{(low['Amount'].sum() / total_sales * 100) if total_sales else 0:.1f}% of sales",
+                  delta_color="off")
 
     if low.empty:
         st.success(f"All {label} items are above the {thresh}% GP target.")
@@ -332,6 +341,8 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
                         "Invoice", "Sales Order",
                         "Amount", "Gross Profit", "Gross Profit %",
                         "Target GP", "Profit Lost"]].copy()
+    if not show_lost:
+        low_display = low_display.drop(columns=["Target GP", "Profit Lost"])
     low_display["Notes"] = ""
     st.dataframe(
         low_display.style.format({c: _space_fmt for c in low_display.columns if c in NUM_COLS + PCT_COLS}),
@@ -339,6 +350,9 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
         column_config={"Item Description": st.column_config.TextColumn(width="small"),
                        "Notes": st.column_config.TextColumn("Notes / Comments", width="medium")},
     )
+
+    if not show_lost:
+        return
 
     st.markdown("#### 🎯 Action Plan — 80% of Profit Loss")
     pareto = low.groupby(["Item Code", "Item Description", "Group"]).agg(
@@ -695,11 +709,29 @@ with tab_gp:
         Sales=("Amount", "sum"), **{"Gross Profit": ("Gross Profit", "sum")})
     wf["Category"] = wf["Group_Category"].map(CATEGORY_LABELS).fillna("N/A")
     wf = wf.sort_values("Gross Profit", ascending=False)
-    # Category name with its own GP % underneath
+    # Category name, achieved GP %, and its target (green = target met, red = missed)
     wf_pct = (wf["Gross Profit"] / wf["Sales"] * 100).where(wf["Sales"] != 0)
-    wf_x = [f"{c}<br><b>{p:.1f}% GP</b>" if pd.notna(p) else c for c, p in zip(wf["Category"], wf_pct)]
+    wf_target = wf["Group_Category"].map(
+        lambda c: CATEGORY_PRESETS[c]["threshold"] if c in CATEGORY_PRESETS else None)
+
+    def _wf_label(name, achieved, target):
+        if pd.isna(achieved):
+            return name
+        if target is None or pd.isna(target):
+            return f"{name}<br><b>Achieved {achieved:.1f}%</b><br>Target —"
+        colour = "#1e8e3e" if achieved >= target else "#d93025"
+        return (f"{name}<br><b>Achieved <span style='color:{colour}'>{achieved:.1f}%</span></b>"
+                f"<br>Target {target:.0f}%")
+
+    wf_x = [_wf_label(c, p, t) for c, p, t in zip(wf["Category"], wf_pct, wf_target)]
+    # Blended target: each category's target weighted by its sales (categories with targets only)
+    has_t = wf_target.notna()
+    t_sales = wf.loc[has_t, "Sales"].sum()
+    blended = (wf.loc[has_t, "Sales"] * wf_target[has_t]).sum() / t_sales if t_sales else None
+    total_x = (f"TOTAL GP<br><b>Achieved {bd_pct:.1f}%</b><br>Blended target {blended:.1f}%"
+               if blended is not None else f"TOTAL GP<br><b>Achieved {bd_pct:.1f}%</b>")
     fig_wf = go.Figure(go.Waterfall(
-        x=wf_x + [f"TOTAL GP<br><b>{bd_pct:.1f}% GP</b>"],
+        x=wf_x + [total_x],
         y=list(wf["Gross Profit"]) + [bd_gp],
         measure=["relative"] * len(wf) + ["total"],
         text=[fmt_zar(v) for v in wf["Gross Profit"]] + [fmt_zar(bd_gp)],
@@ -709,7 +741,7 @@ with tab_gp:
         totals={"marker": {"color": NAVY}},
     ))
     fig_wf.update_layout(title="Gross Profit Build-up by Category", yaxis_title="Gross Profit (R)",
-                         showlegend=False)
+                         showlegend=False, margin={"b": 110}, xaxis={"tickangle": 0})
     st.plotly_chart(fig_wf, use_container_width=True)
 
     # ── Drill-down: rank any dimension by GP contribution ────────────────────
