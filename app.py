@@ -56,31 +56,62 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-CATEGORY_LABELS = {
-    1: "Buy Outs",
-    2: "Value Add",
-    3: "Manufacturing",
-    4: "Capital Goods",
-    5: "Regular Repairs",
-    6: "Technicians Labour",
-    7: "Lubricants",
-    8: "Deposits",
-    "N/A": "N/A",
+# ── Category schemes ─────────────────────────────────────────────────────────
+# Groups can be classified two ways; the sidebar "Category view" switch picks one.
+# Each scheme has its own Group List file. Categories without a preset (Deposits)
+# have no GP target and no target tab.
+CATEGORY_SCHEMES = {
+    "8 categories": {
+        "group_list": "Group List.xlsx",
+        "labels": {1: "Buy Outs", 2: "Value Add", 3: "Manufacturing", 4: "Capital Goods",
+                   5: "Regular Repairs", 6: "Technicians Labour", 7: "Lubricants", 8: "Deposits"},
+        "order": [4, 8, 2, 5, 3, 1, 6, 7],
+        "presets": {
+            1: {"label": "Buy Outs",           "threshold": 20, "emoji": "🛒", "tab": "🛒 Buy Outs"},
+            2: {"label": "Value Add",          "threshold": 35, "emoji": "⚙️", "tab": "⚙️ Value Add"},
+            3: {"label": "Manufacturing",      "threshold": 55, "emoji": "🏭", "tab": "🏭 Manufacturing"},
+            4: {"label": "Capital Goods",      "threshold": 55, "emoji": "🏗️", "tab": "🏗️ Capital Goods"},
+            5: {"label": "Regular Repairs",    "threshold": 35, "emoji": "🔧", "tab": "🔧 Repairs"},
+            6: {"label": "Technicians Labour", "threshold": 20, "emoji": "👷", "tab": "👷 Labour"},
+            7: {"label": "Lubricants",         "threshold": 12, "emoji": "🛢️", "tab": "🛢️ Lubricants"},
+        },
+        "deposit_cat": 8,       # deposits get their own category
+        "sales_extra": {"CAP": 4, "REP/CAP": 5},
+    },
+    "4 categories": {
+        "group_list": "Group List - 4 Categories.xlsx",
+        "labels": {1: "Capital", 2: "Buy Outs", 3: "Value Add", 4: "Rham MNF", 5: "Technicians Labour"},
+        "order": [1, 2, 3, 4, 5],
+        "presets": {
+            1: {"label": "Capital",            "threshold": 55, "emoji": "🏗️", "tab": "🏗️ Capital"},
+            2: {"label": "Buy Outs",           "threshold": 20, "emoji": "🛒", "tab": "🛒 Buy Outs"},
+            3: {"label": "Value Add",          "threshold": 35, "emoji": "⚙️", "tab": "⚙️ Value Add"},
+            4: {"label": "Rham MNF",           "threshold": 55, "emoji": "🏭", "tab": "🏭 Rham MNF"},
+            5: {"label": "Technicians Labour", "threshold": 20, "emoji": "👷", "tab": "👷 Labour"},
+        },
+        "deposit_cat": None,    # deposits stay in Capital, as the Group List says
+        "sales_extra": {"CAP": 1, "REP/CAP": 1},
+    },
 }
 
-# Preset GP thresholds per category (used by the Category Analysis tabs)
-# Display order for category lists and tables
-CATEGORY_ORDER = [4, 8, 2, 5, 3, 1, 6, 7, "N/A"]
 
-CATEGORY_PRESETS = {
-    1: {"label": "Buy Outs",              "threshold": 20, "emoji": "🛒"},
-    2: {"label": "Value Add",              "threshold": 35, "emoji": "⚙️"},
-    3: {"label": "Manufacturing",          "threshold": 55, "emoji": "🏭"},
-    4: {"label": "Capital Goods",          "threshold": 55, "emoji": "🏗️"},
-    5: {"label": "Regular Repairs",        "threshold": 35, "emoji": "🔧"},
-    6: {"label": "Technicians Labour",     "threshold": 20, "emoji": "👷"},
-    7: {"label": "Lubricants",             "threshold": 12, "emoji": "🛢️"},
-}
+def use_category_scheme(name):
+    """Point the category settings used across the app at one scheme."""
+    global CATEGORY_SCHEME, CATEGORY_LABELS, CATEGORY_ORDER, CATEGORY_PRESETS
+    global GROUP_LIST_PATH, DEPOSIT_CAT, SALES_EXTRA_GROUP_CATS
+    scheme = CATEGORY_SCHEMES[name]
+    CATEGORY_SCHEME  = name
+    CATEGORY_LABELS  = {**scheme["labels"], "N/A": "N/A"}
+    CATEGORY_ORDER   = scheme["order"] + ["N/A"]   # display order for lists and tables
+    CATEGORY_PRESETS = scheme["presets"]
+    GROUP_LIST_PATH  = Path(__file__).parent / scheme["group_list"]
+    DEPOSIT_CAT      = scheme["deposit_cat"]
+    # Sales Analysis group codes that are not in the Group List
+    SALES_EXTRA_GROUP_CATS = scheme["sales_extra"]
+
+
+use_category_scheme("8 categories")
+
 
 def fmt_zar(value):
     return f"R {value:,.2f}".replace(",", " ")
@@ -91,33 +122,33 @@ def fmt_pct(value):
 def fmt_num(value):
     return f"{value:,.2f}".replace(",", " ")
 
-GROUP_LIST_PATH = Path(__file__).parent / "Group List.xlsx"
-
-
 def load_group_list():
     if not GROUP_LIST_PATH.exists():
         return pd.DataFrame(columns=["Group", "Description", "Type", "Group_Category"])
     raw = pd.read_excel(GROUP_LIST_PATH, header=None)
-    # Skip header row if present
-    first = str(raw.iloc[0, 0]).strip().lower()
-    df = raw.iloc[1:].copy() if first == "group" else raw.copy()
-    # Category comes from Type (col 2), falling back to Group_Category (col 3)
-    has_cat_col = df.shape[1] >= 4
-    df = df.iloc[:, :4] if has_cat_col else df.iloc[:, :3]
-    if has_cat_col:
-        df.columns = ["Group", "Description", "Type", "Group_Category"]
-        df["Group"] = df["Group"].astype(str).str.strip()
-        # Type is the column users edit; Group_Category only fills gaps
-        raw_cat = df["Type"].where(pd.to_numeric(df["Type"], errors="coerce").isin(range(1, 9)),
-                                   df["Group_Category"])
-    else:
-        df.columns = ["Group", "Description", "Type"]
-        df["Group"] = df["Group"].astype(str).str.strip()
-        raw_cat = df["Type"]
-    df["Group_Category"] = raw_cat.apply(
-        lambda x: int(x) if pd.notna(x) and str(x).strip() not in ("", "None", "N/A", "nan")
-                  and pd.to_numeric(x, errors="coerce") in (1, 2, 3, 4, 5, 6, 7, 8) else "N/A"
-    )
+    header = [str(v).strip().lower() for v in raw.iloc[0]]
+    has_header = header[0] == "group"
+    body = raw.iloc[1:] if has_header else raw
+    # Type (called Classification in the 4-category list) is the column users edit;
+    # Group_Category only fills gaps
+    type_col = next((i for i, h in enumerate(header) if h in ("type", "classification")), 2) if has_header else 2
+    cat_col = header.index("group_category") if has_header and "group_category" in header else None
+    df = pd.DataFrame({
+        "Group": body.iloc[:, 0].astype(str).str.strip(),
+        "Description": body.iloc[:, 1],
+        "Type": body.iloc[:, type_col],
+        "Group_Category": body.iloc[:, cat_col] if cat_col is not None else None,
+    })
+    df = df[~df["Group"].isin(["", "nan", "None"])]
+
+    valid = set(CATEGORY_LABELS) - {"N/A"}
+
+    def _cat(v):
+        n = pd.to_numeric(v, errors="coerce")
+        return int(n) if pd.notna(n) and n == int(n) and int(n) in valid else None
+
+    cats = [_cat(t) if _cat(t) is not None else _cat(g) for t, g in zip(df["Type"], df["Group_Category"])]
+    df["Group_Category"] = [c if c is not None else "N/A" for c in cats]
     return df.reset_index(drop=True)
 
 
@@ -307,11 +338,16 @@ def merge_group_list(df: pd.DataFrame, group_list: pd.DataFrame) -> pd.DataFrame
             return "N/A"
         try:
             v = int(float(x))
-            return v if v in (1, 2, 3, 4, 5, 6, 7, 8) else "N/A"
+            return v if v in CATEGORY_LABELS and v != "N/A" else "N/A"
         except (ValueError, TypeError):
             return "N/A"
 
     merged["Group_Category"] = merged["Group_Category"].apply(_to_cat)
+    # Deposits are found by group or item code, so they work in either category view
+    merged["Is_Deposit"] = (merged["Group"].astype(str).str.strip().str.upper().eq("DEP")
+                            | merged["Item Code"].astype(str).str.strip().str.upper().eq("DEP"))
+    if DEPOSIT_CAT is not None:
+        merged.loc[merged["Is_Deposit"], "Group_Category"] = DEPOSIT_CAT
     return merged
 
 
@@ -395,19 +431,19 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
     with _col_btn:
         st.write("")
         st.button(
-            "↺ Reset", key=f"reset_thresh_{cat_id}",
+            "↺ Reset", key=f"reset_thresh_{CATEGORY_SCHEME}_{cat_id}",
             help=f"Reset to {default}% default",
-            on_click=lambda d=default, k=cat_id: st.session_state.update({f"cat_thresh_{k}": d}),
+            on_click=lambda d=default, k=f"cat_thresh_{CATEGORY_SCHEME}_{cat_id}": st.session_state.update({k: d}),
         )
     with _col_slider:
         thresh = st.slider(
             f"GP % Threshold — {label}",
             min_value=0, max_value=100, value=default, step=1,
-            key=f"cat_thresh_{cat_id}",
+            key=f"cat_thresh_{CATEGORY_SCHEME}_{cat_id}",
             help=f"Default for {label} is {default}%. Drag to adjust.",
         )
     show_lost = st.toggle(
-        "Show profit lost", value=False, key=f"show_lost_{cat_id}",
+        "Show profit lost", value=False, key=f"show_lost_{CATEGORY_SCHEME}_{cat_id}",
         help="Off: just the items under target. On: adds Target GP, Profit Lost and the Action Plan.",
     )
 
@@ -524,6 +560,12 @@ def render_category_tab(cat_id: int, base_df: pd.DataFrame, sidebar_filters: dic
 with st.sidebar:
     st.title("📦 Inventory Analysis")
     st.markdown("---")
+    category_scheme = st.radio(
+        "Category view", list(CATEGORY_SCHEMES), horizontal=True, key="category_scheme",
+        help="8 categories uses the original Group List; 4 categories uses the new 4-category Group List.",
+    )
+    use_category_scheme(category_scheme)
+    st.markdown("---")
 
     uploaded_files = st.file_uploader(
         "Upload Inventory Sales Files (.xls / .xlsx)",
@@ -568,7 +610,7 @@ with st.sidebar:
                 help="Removes capital equipment deposits from every tab, chart and total.",
             )
             if exclude_deposits:
-                full_df = full_df[full_df["Group_Category"] != 8]
+                full_df = full_df[~full_df["Is_Deposit"]]
 
             customers = sorted(full_df["Customer"].dropna().unique())
             years = sorted(full_df["Year"].dropna().unique().astype(int))
@@ -589,7 +631,7 @@ with st.sidebar:
             st.download_button(
                 "⬇️ Download Group List",
                 data=to_excel_bytes(group_list[["Group", "Description", "Type", "Group_Category"]]),
-                file_name="Group List Review.xlsx",
+                file_name=f"Group List Review - {CATEGORY_SCHEME}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 help="Download the Group List to review and correct Type classifications.",
@@ -622,16 +664,13 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption(
-        "Group Categories:\n"
-        "- **Capital Goods** (55% target)\n"
-        "- **Deposits** (no target)\n"
-        "- **Value Add** (35% target)\n"
-        "- **Regular Repairs** (35% target)\n"
-        "- **Manufacturing** (55% target)\n"
-        "- **Buy Outs** (20% target)\n"
-        "- **Technicians Labour** (20% target)\n"
-        "- **Lubricants** (12% target)\n"
-        "- **N/A** Unclassified (opt-in)"
+        f"Group Categories ({CATEGORY_SCHEME}):\n"
+        + "".join(
+            f"- **{CATEGORY_LABELS[c]}** ({CATEGORY_PRESETS[c]['threshold']}% target)\n"
+            if c in CATEGORY_PRESETS else f"- **{CATEGORY_LABELS[c]}** (no target)\n"
+            for c in CATEGORY_ORDER if c != "N/A"
+        )
+        + "- **N/A** Unclassified (opt-in)"
     )
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -658,28 +697,25 @@ if df is None or len(df) == 0:
     st.warning("No data matches the current filters.")
     st.stop()
 
-tab1, tab_gp, cat4, tab_dep, cat2, cat5, cat3, cat1, cat6, cat7, tab_na, \
-    tab3, tab2, tab4, tab5, tab6, tab7, tab8, tab_items = st.tabs([
-    "📊 Overview",
-    "🔎 GP Breakdown",
-    "🏗️ Capital Goods",
-    "🏦 Deposits",
-    "⚙️ Value Add",
-    "🔧 Repairs",
-    "🏭 Manufacturing",
-    "🛒 Buy Outs",
-    "👷 Labour",
-    "🛢️ Lubricants",
-    "❓ N/A Unclassified",
-    "💸 Profit Lost",
-    "⚠️ Low GP Analysis",
-    "👤 GP by Customer",
-    "🔀 Item GP by Customer",
-    "📅 By Year",
-    "📋 Raw Data",
-    "➖ Negative Amounts",
-    "🏷️ Item Price Check",
-])
+# Tabs follow the active category view: one target tab per category, plus Deposits
+_tab_labels = ["📊 Overview", "🔎 GP Breakdown"]
+for _c in CATEGORY_ORDER:
+    if _c in CATEGORY_PRESETS:
+        _tab_labels.append(CATEGORY_PRESETS[_c]["tab"])
+    elif _c == DEPOSIT_CAT:
+        _tab_labels.append("🏦 Deposits")
+if DEPOSIT_CAT is None:
+    _tab_labels.append("🏦 Deposits")
+_tab_labels += ["❓ N/A Unclassified", "💸 Profit Lost", "⚠️ Low GP Analysis", "👤 GP by Customer",
+                "🔀 Item GP by Customer", "📅 By Year", "📋 Raw Data", "➖ Negative Amounts",
+                "🏷️ Item Price Check"]
+_tabs = dict(zip(_tab_labels, st.tabs(_tab_labels)))
+tab1, tab_gp, tab_dep, tab_na = (
+    _tabs[k] for k in ("📊 Overview", "🔎 GP Breakdown", "🏦 Deposits", "❓ N/A Unclassified"))
+tab3, tab2, tab4, tab5, tab6, tab7, tab8, tab_items = (_tabs[k] for k in (
+    "💸 Profit Lost", "⚠️ Low GP Analysis", "👤 GP by Customer", "🔀 Item GP by Customer",
+    "📅 By Year", "📋 Raw Data", "➖ Negative Amounts", "🏷️ Item Price Check"))
+cat_tabs = {c: _tabs[CATEGORY_PRESETS[c]["tab"]] for c in CATEGORY_ORDER if c in CATEGORY_PRESETS}
 
 # ─── Tab 1: Overview ──────────────────────────────────────────────────────────
 with tab1:
@@ -895,7 +931,7 @@ with tab_gp:
         contrib_cat = "All"
     else:
         contrib_cat = dc2.selectbox(
-            "Category", cat_choices, key="gp_bd_cat",
+            "Category", cat_choices, key=f"gp_bd_cat_{CATEGORY_SCHEME}",
             format_func=lambda c: "All categories" if c == "All" else CATEGORY_LABELS.get(c, str(c)),
         )
     top_n = dc3.slider("Show top", 5, 50, 20, step=5, key="gp_bd_topn")
@@ -1032,7 +1068,7 @@ with tab_na:
             if not g or g in ("nan", "None"):
                 return "No group code on the line"
             if g in listed_groups:
-                return "In Group List but Type is blank"
+                return "In Group List but not classified"
             return "Group code missing from Group List"
 
         na["Reason"] = na["Group"].apply(_na_reason)
@@ -1061,8 +1097,8 @@ with tab_na:
             reasons_disp[col] = reasons_disp[col].apply(fmt_zar)
         st.dataframe(reasons_disp, use_container_width=True, hide_index=True)
         st.caption(
-            "**Missing from Group List** — add the code to the Group List with a Type (1–7).  \n"
-            "**Type is blank** — the code is in the Group List but has no Type; fill it in.  \n"
+            "**Missing from Group List** — add the code to the Group List with a Type (category number).  \n"
+            "**Not classified** — the code is in the Group List but its Type is blank or NIL.  \n"
             "**No group code** — the item has no group in Sage; fix the item master."
         )
 
@@ -1106,7 +1142,7 @@ with tab_na:
             data=to_excel_bytes(to_classify),
             file_name="N-A Groups to Classify.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="Fill in the Type column (1–7), then add these rows to the Group List.",
+            help="Fill in the Type column (category number), then add these rows to the Group List.",
         )
 
         # ── Top items ────────────────────────────────────────────────────────
@@ -1153,11 +1189,11 @@ with tab_dep:
         dep_base = dep_base[dep_base["Customer"].isin(sel_customers)]
     if sel_years:
         dep_base = dep_base[dep_base["Year"].isin(sel_years)]
-    dep = dep_base[dep_base["Group_Category"] == 8]
+    dep = dep_base[dep_base["Is_Deposit"]]
 
     # Headline comparison counts lines the same way the rest of the dashboard does
     head_base = dep_base[dep_base["Gross Profit"] >= 0] if exclude_negative else dep_base
-    non_dep   = head_base[head_base["Group_Category"] != 8]
+    non_dep   = head_base[~head_base["Is_Deposit"]]
 
     if dep.empty:
         if not exclude_deposits:
@@ -1182,7 +1218,7 @@ with tab_dep:
         nd_sales, nd_gp   = non_dep["Amount"].sum(), non_dep["Gross Profit"].sum()
         all_pct = (all_gp / all_sales * 100) if all_sales else 0
         nd_pct  = (nd_gp / nd_sales * 100) if nd_sales else 0
-        counted = head_base.loc[head_base["Group_Category"] == 8, "Gross Profit"].sum()
+        counted = head_base.loc[head_base["Is_Deposit"], "Gross Profit"].sum()
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Deposit GP Counted in Totals", f"R {counted / 1e6:,.1f}M")
@@ -1798,8 +1834,7 @@ if sel_years:
 if exclude_negative:
     _base_cat_df = _base_cat_df[_base_cat_df["Gross Profit"] >= 0]
 
-_cat_tabs = [cat1, cat2, cat3, cat4, cat5, cat6, cat7]
-for _cat_id, _tab in zip(range(1, 8), _cat_tabs):
+for _cat_id, _tab in cat_tabs.items():
     with _tab:
         render_category_tab(_cat_id, _base_cat_df, _sidebar_filters)
 
@@ -1828,19 +1863,19 @@ with tab_items:
             & (item_df["GP %"] < item_df["Target GP %"])
         )
 
-        classified = item_df[item_df["Group_Category"].isin(range(1, 8))]
+        classified = item_df[item_df["Group_Category"].isin(list(CATEGORY_PRESETS))]
         total_items   = len(classified)
         below_items   = classified["Below Target"].sum()
         below_pct     = below_items / total_items * 100 if total_items else 0
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Total Items (Cat 1-7)", f"{total_items:,}".replace(",", " "))
+        c1.metric("Total Items (with a target)", f"{total_items:,}".replace(",", " "))
         c2.metric("Items Below GP Target", f"{int(below_items):,}".replace(",", " "))
         c3.metric("% Below Target", f"{below_pct:.1f}%")
 
         st.markdown("---")
 
-        for cat_id in range(1, 8):
+        for cat_id in CATEGORY_PRESETS:
             preset = CATEGORY_PRESETS[cat_id]
             cat_items = item_df[item_df["Group_Category"] == cat_id].copy()
             if cat_items.empty:
