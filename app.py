@@ -698,7 +698,7 @@ if df is None or len(df) == 0:
     st.stop()
 
 # Tabs follow the active category view: one target tab per category, plus Deposits
-_tab_labels = ["📊 Overview", "🔎 GP Breakdown"]
+_tab_labels = ["📊 Overview", "🔎 GP Breakdown", "💲 2027 Pricing"]
 for _c in CATEGORY_ORDER:
     if _c in CATEGORY_PRESETS:
         _tab_labels.append(CATEGORY_PRESETS[_c]["tab"])
@@ -716,6 +716,7 @@ tab3, tab2, tab4, tab5, tab6, tab7, tab8, tab_items = (_tabs[k] for k in (
     "💸 Profit Lost", "⚠️ Low GP Analysis", "👤 GP by Customer", "🔀 Item GP by Customer",
     "📅 By Year", "📋 Raw Data", "➖ Negative Amounts", "🏷️ Item Price Check"))
 cat_tabs = {c: _tabs[CATEGORY_PRESETS[c]["tab"]] for c in CATEGORY_ORDER if c in CATEGORY_PRESETS}
+tab_price = _tabs["💲 2027 Pricing"]
 
 # ─── Tab 1: Overview ──────────────────────────────────────────────────────────
 with tab1:
@@ -1042,6 +1043,123 @@ with tab_gp:
                                            "Quantity", "Amount", "Cost", "Gross Profit", "Gross Profit %"]]
     big = big.assign(**{"Share of Total GP %": big["Gross Profit"] / bd_gp * 100 if bd_gp else 0})
     st.dataframe(big, use_container_width=True, hide_index=True)
+
+# ─── 2027 Pricing: biggest sellers per category and the price needed to hit target ──
+with tab_price:
+    st.subheader("2027 Pricing Review")
+    st.caption("Ranks items by how much you sell, not by profit lost, so high-volume items where a small "
+               "price change adds up are easy to spot. Prices are averages per unit from the selected period. "
+               "Deposits are left out.")
+
+    pr_src = df[~df["Is_Deposit"]] if "Is_Deposit" in df.columns else df
+    pc1, pc2, pc3 = st.columns([2, 2, 1])
+    pr_cats = ["All"] + [c for c in CATEGORY_ORDER if c in CATEGORY_PRESETS and c in set(pr_src["Group_Category"])]
+    pr_cat = pc1.selectbox(
+        "Category", pr_cats, key=f"pr_cat_{CATEGORY_SCHEME}",
+        format_func=lambda c: "All categories" if c == "All" else CATEGORY_LABELS.get(c, str(c)),
+    )
+    rank_by = pc2.radio("Rank items by", ["Sales (R)", "Quantity sold", "Extra GP at target"],
+                        horizontal=True, key="pr_rank")
+    pr_top = pc3.number_input("Show top", 10, 500, 50, step=10, key="pr_top")
+    pf1, pf2 = st.columns([1, 2])
+    only_below = pf1.toggle("Only items below target", value=False, key="pr_only_below")
+    uplift = pf2.slider("What if we raise prices by…", 0, 30, 5, step=1, format="%d%%", key="pr_uplift")
+
+    if pr_cat != "All":
+        pr_src = pr_src[pr_src["Group_Category"] == pr_cat]
+    pr_src = pr_src[pr_src["Group_Category"].isin(list(CATEGORY_PRESETS))]
+
+    if pr_src.empty:
+        st.info("No items with a GP target in the current selection.")
+    else:
+        items = pr_src.groupby(["Item Code", "Item Description", "Group", "Group_Category"], as_index=False).agg(
+            Lines=("Amount", "size"),
+            Quantity=("Quantity", "sum"),
+            Sales=("Amount", "sum"),
+            Cost=("Cost", "sum"),
+            GP=("Gross Profit", "sum"),
+        )
+        items = items[(items["Quantity"] > 0) & (items["Sales"] > 0)]
+        items["Category"]       = items["Group_Category"].map(CATEGORY_LABELS)
+        items["GP %"]           = items["GP"] / items["Sales"] * 100
+        items["Target GP %"]    = items["Group_Category"].map(lambda c: CATEGORY_PRESETS[c]["threshold"])
+        items["Avg Price"]      = items["Sales"] / items["Quantity"]
+        items["Avg Unit Cost"]  = items["Cost"] / items["Quantity"]
+        # Price that would give exactly the target GP % on the current unit cost
+        has_cost = items["Avg Unit Cost"] > 0
+        items["Price for Target"] = (items["Avg Unit Cost"] / (1 - items["Target GP %"] / 100)).where(has_cost)
+        items["Increase Needed %"] = ((items["Price for Target"] / items["Avg Price"] - 1) * 100).clip(lower=0)
+        items["Extra GP at Target"] = ((items["Price for Target"] - items["Avg Price"]).clip(lower=0)
+                                       * items["Quantity"]).fillna(0)
+        items[f"Extra GP at +{uplift}%"] = items["Sales"] * uplift / 100
+        items["Below Target"] = items["GP %"] < items["Target GP %"]
+        if only_below:
+            items = items[items["Below Target"]]
+
+        sort_col = {"Sales (R)": "Sales", "Quantity sold": "Quantity",
+                    "Extra GP at target": "Extra GP at Target"}[rank_by]
+        items = items.sort_values(sort_col, ascending=False)
+        items["Share of Sales %"] = items["Sales"] / items["Sales"].sum() * 100
+        items["Cumulative Sales %"] = items["Share of Sales %"].cumsum()
+
+        tot_sales, tot_gp = items["Sales"].sum(), items["GP"].sum()
+        new_gp = tot_gp + tot_sales * uplift / 100
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Items", f"{len(items):,}".replace(",", " "),
+                  f"{int(items['Below Target'].sum()):,} below target".replace(",", " "), delta_color="off")
+        c2.metric("Sales", f"R {tot_sales / 1e6:,.1f}M", f"GP {tot_gp / tot_sales * 100:.1f}%" if tot_sales else "",
+                  delta_color="off")
+        c3.metric("Extra GP if All Below-Target Items Hit Target",
+                  f"R {items['Extra GP at Target'].sum() / 1e6:,.2f}M")
+        c4.metric(f"Extra GP at +{uplift}% on Everything", f"R {tot_sales * uplift / 100 / 1e6:,.2f}M",
+                  f"GP {new_gp / (tot_sales * (1 + uplift / 100)) * 100:.1f}% after" if tot_sales else "",
+                  delta_color="off")
+
+        top_items = items.head(int(pr_top))
+        fig_pr = go.Figure()
+        fig_pr.add_bar(x=top_items["Item Code"].head(25), y=top_items[sort_col].head(25),
+                       marker_color=[STEEL if b else NAVY for b in top_items["Below Target"].head(25)],
+                       name=rank_by)
+        fig_pr.update_layout(
+            title=f"Top 25 by {rank_by} — light bars are below target",
+            yaxis_title=rank_by, showlegend=False,
+        )
+        st.plotly_chart(fig_pr, use_container_width=True)
+
+        show_cols = ["Item Code", "Item Description", "Group", "Category", "Lines", "Quantity", "Sales",
+                     "Share of Sales %", "Cumulative Sales %", "GP %", "Target GP %", "Avg Price",
+                     "Avg Unit Cost", "Price for Target", "Increase Needed %", "Extra GP at Target",
+                     f"Extra GP at +{uplift}%"]
+        if pr_cat != "All":
+            show_cols.remove("Category")
+        disp = top_items[show_cols].copy()
+        for col in ("Sales", "Avg Price", "Avg Unit Cost", "Price for Target", "Extra GP at Target",
+                    f"Extra GP at +{uplift}%"):
+            disp[col] = disp[col].apply(lambda v: fmt_zar(v) if pd.notna(v) else "—")
+        for col in ("Share of Sales %", "Cumulative Sales %", "GP %", "Increase Needed %"):
+            disp[col] = disp[col].apply(lambda v: fmt_pct(v) if pd.notna(v) else "—")
+        disp["Target GP %"] = disp["Target GP %"].apply(lambda v: f"{v:.0f}%")
+        disp["Quantity"] = disp["Quantity"].apply(fmt_num)
+        st.dataframe(
+            disp.style.apply(
+                lambda r: ["color:#d93025" if r.name in top_items.index[top_items["Below Target"]] and
+                           c == "GP %" else "" for c in r.index], axis=1),
+            use_container_width=True, hide_index=True, height=450,
+            column_config={"Item Description": st.column_config.TextColumn(width="medium")},
+        )
+        st.caption("**Price for Target** = average unit cost ÷ (1 − target GP %). **Extra GP at Target** = the "
+                   "increase per unit × quantity sold, at this period's volumes. Items with no cost show —.")
+
+        sheet = items[show_cols].copy()
+        sheet["2027 New Price"] = None
+        sheet["Notes"] = None
+        scope = "All categories" if pr_cat == "All" else CATEGORY_LABELS.get(pr_cat, pr_cat)
+        st.download_button(
+            f"⬇️ Download 2027 pricing worksheet — {scope}",
+            data=to_excel_bytes(sheet),
+            file_name=f"2027 Pricing - {scope} ({CATEGORY_SCHEME}).xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 # ─── N/A Unclassified: lines with no Group Category ──────────────────────────
 with tab_na:
